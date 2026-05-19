@@ -167,10 +167,10 @@
     <div class="row">
       <span class="lbl">Overlays</span>
       <label class="syncbox"><input type="checkbox" id="showMean" checked /> Mean of selected</label>
-      <label class="syncbox"><input type="checkbox" id="showMinMax" checked /> Min/Max band</label>
+      <label class="syncbox"><input type="checkbox" id="showMinMax" /> Min/Max band</label>
       <label class="syncbox"><input type="checkbox" id="showStd" /> ±1σ band</label>
       <label class="syncbox" style="display:none"><input type="checkbox" id="showIQR" /> IQR (25–75) band</label>
-      <label class="syncbox"><input type="checkbox" id="hideIndividual" /> Hide individual lines</label>
+      <label class="syncbox"><input type="checkbox" id="hideIndividual" checked /> Hide individual lines</label>
       <label class="syncbox"><input type="checkbox" id="showIpoPrice" /> <span style="color:#fbbf24">▬</span> IPO Price line</label>
       <label class="syncbox"><input type="checkbox" id="showIpoOpen" /> <span style="color:#38bdf8">▬</span> IPO Open line</label>
     </div>
@@ -293,7 +293,7 @@ let selected = new Set(TICKERS.filter(t => t !== 'SPY'));
 let baseline = 'open';
 let endDays  = 252;
 let mode     = 'pct';
-let opts     = { mean: true, minmax: true, std: false, iqr: false, hideIndividual: false };
+let opts     = { mean: true, minmax: false, std: false, iqr: false, hideIndividual: true };
 let showIpoPrice = false;
 let showIpoOpen  = false;
 let showSummary  = true;
