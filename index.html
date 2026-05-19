@@ -62,18 +62,18 @@
   #hoverCard .r { display: flex; justify-content: space-between; gap: 14px; margin: 1px 0; }
   #hoverCard .r .l { color: var(--muted); }
 
-  .table-wrap { margin-top: 14px; background: var(--panel); border-radius: 6px; padding: 12px 14px; }
+  .table-wrap { margin-top: 14px; background: var(--panel); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
   .table-wrap h2 { margin: 0 0 8px 0; font-size: 14px; font-weight: 600; }
   table.stats { width: 100%; border-collapse: collapse; font-size: 12px;
                 font-variant-numeric: tabular-nums; }
-  table.stats th { background: #1c232c; color: var(--muted); padding: 7px 10px;
+  table.stats th { background: #1c232c; color: var(--muted); padding: 7px 8px;
                    cursor: pointer; user-select: none;
                    font-weight: 600; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
   table.stats th:first-child, table.stats td:first-child { text-align: left; }
   table.stats th:hover { background: #252e38; color: var(--text); }
   table.stats th.sort-asc::after  { content: ' \25B2'; color: var(--text); font-size: 10px; }
   table.stats th.sort-desc::after { content: ' \25BC'; color: var(--text); font-size: 10px; }
-  table.stats td { text-align: right; padding: 5px 10px; border-bottom: 1px solid #1a1f26; white-space: nowrap; }
+  table.stats td { text-align: right; padding: 5px 8px; border-bottom: 1px solid #1a1f26; white-space: nowrap; }
   table.stats tr.avg td   { background: rgba(88,166,255,0.20); font-weight: 800; font-size: 14.5px; border-top: 2px solid #58a6ff; border-bottom: 2px solid #58a6ff; padding: 9px 10px; letter-spacing: 0.2px; }
   table.stats tr.minrow td, table.stats tr.maxrow td, table.stats tr.medrow td, table.stats tr.winrow td {
     background: rgba(88,166,255,0.04); font-weight: 500; font-size: 12px; color: var(--text);
@@ -105,7 +105,7 @@
   .cohort-label { display: inline-block; color: var(--muted); font-size: 10px; text-transform: uppercase;
                    letter-spacing: 0.4px; margin: 0 4px 0 6px; }
   .group.cohort button.active { background: #5a4a14; color: #fdd96e; border-color: rgba(251,191,36,0.55); }
-  .cohort-paren { color: #fbbf24; font-size: 11px; font-weight: 500; white-space: nowrap; margin-left: 4px; }
+  .cohort-paren { color: #fbbf24; font-size: 10px; font-weight: 500; white-space: nowrap; margin-left: 3px; }
   .cohort-badge { display: inline-block; padding: 2px 9px; border-radius: 3px;
                   background: #2d2410; color: #fdd96e; font-weight: 700; font-size: 11px;
                   border: 1px solid rgba(251,191,36,0.45); margin-left: 8px; letter-spacing: 0.3px; }
@@ -199,6 +199,11 @@
         <button data-cohort="era_zirp">ZIRP</button>
         <button data-cohort="era_post">Post-ZIRP</button>
       </div>
+      <span class="cohort-label">Named</span>
+      <div class="group cohort">
+        <button data-cohort="named_mag5">MAG5</button>
+      </div>
+      <label class="syncbox" style="margin-left:12px"><input type="checkbox" id="excludeCohort" /> Exclude cohort from main averages</label>
     </div>
   </div>
 
@@ -310,8 +315,10 @@ const COHORTS = {
   era_pre:    { label: 'Pre-GFC (pre-2010)',   tickers: ['AMZN','GOOGL','NFLX','MA','V','BX','CRM'] },
   era_zirp:   { label: 'ZIRP (2010-2021)',     tickers: ['TSLA','GM','META','HLT','TWTR','BABA','SNAP','UBER','DASH','ABNB','SNOW','CPNG','RIVN','BMBL','HOOD','APP','LNKD'] },
   era_post:   { label: 'Post-ZIRP (2022+)',    tickers: ['ARM','LINE','MDLN','CRWV','FIG','RDDT'] },
+  named_mag5: { label: 'MAG5',                 tickers: ['AMZN','GOOGL','META','NFLX','TSLA'] },
 };
 let cohortKey = null;
+let excludeCohortFromMain = false;
 const COHORT_COLOR = '#fbbf24';
 
 const IPO_META = {
@@ -411,6 +418,11 @@ document.getElementById('showIpoPrice').addEventListener('change', e => {
 document.getElementById('showIpoOpen').addEventListener('change', e => {
   showIpoOpen = e.target.checked; refresh();
 });
+document.getElementById('excludeCohort').addEventListener('change', e => {
+  excludeCohortFromMain = e.target.checked;
+  refresh();
+});
+
 document.querySelectorAll('[data-cohort]').forEach(btn => {
   btn.addEventListener('click', () => {
     const v = btn.dataset.cohort;
@@ -996,9 +1008,14 @@ function draw() {
     fullSeriesMap[t] = fs;
     seriesMap[t] = fs.slice(0, endDays + 1);
   }
-  // Drop tickers with much shorter history from the aggregate so one
-  // short series doesn't truncate the mean/bands for everyone else.
-  const aggCohort = getAggCohort(selectedTickers, fullSeriesMap);
+  // If "Exclude cohort from main averages" is ON, remove cohort tickers from
+  // the set that drives the chart's mean line and table summary stats.
+  let mainBase = selectedTickers;
+  if (excludeCohortFromMain && cohortKey && COHORTS[cohortKey]) {
+    const cset = new Set(COHORTS[cohortKey].tickers);
+    mainBase = selectedTickers.filter(t => !cset.has(t));
+  }
+  const aggCohort = getAggCohort(mainBase, fullSeriesMap);
   const agg = aggregate(aggCohort.map(t => seriesMap[t]));
 
   // Decide single-stock candle mode
@@ -1043,6 +1060,19 @@ function draw() {
         }
       }
     }
+    // Cohort mean line — include in y-range so it's never clipped above/below
+    if (cohortKey && COHORTS[cohortKey]) {
+      const cohortRaw = COHORTS[cohortKey].tickers.filter(t => selected.has(t));
+      const cohortT = getAggCohort(cohortRaw, fullSeriesMap);
+      if (cohortT.length > 0) {
+        const cohortAggR = aggregate(cohortT.map(t => seriesMap[t]));
+        for (const a of cohortAggR) {
+          if (!a) continue;
+          if (a.mean < yLo) yLo = a.mean;
+          if (a.mean > yHi) yHi = a.mean;
+        }
+      }
+    }
     if (yLo === Infinity) { yLo = -10; yHi = 10; }
     // Include 0 line
     yLo = Math.min(yLo, 0);
@@ -1057,15 +1087,17 @@ function draw() {
 
   // Gridlines + axes
   ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-  ctx.fillStyle = '#8b949e';
-  ctx.font = '11px -apple-system';
+  ctx.fillStyle = 'rgba(220,225,233,0.95)';
+  ctx.font = 'bold 13px -apple-system,Segoe UI,sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   const yTicks = niceTicks(yLo, yHi, 6);
   for (const v of yTicks) {
     const y = yPos(v);
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     ctx.beginPath(); ctx.moveTo(box.x, y); ctx.lineTo(box.x + box.w2, y); ctx.stroke();
     const lbl = single ? '$' + v.toFixed(2) : (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+    ctx.fillStyle = 'rgba(220,225,233,0.95)';
     ctx.fillText(lbl, box.x - 6, y);
   }
   // Zero line emphasis (non-single mode)
@@ -1096,12 +1128,13 @@ function draw() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   const xticksDays = [0, 21, 42, 63, 126, 189, 252].filter(d => d <= endDays);
+  ctx.font = 'bold 13px -apple-system,Segoe UI,sans-serif';
   for (const d of xticksDays) {
     const x = xPos(d);
     ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     ctx.beginPath(); ctx.moveTo(x, box.y); ctx.lineTo(x, box.y + box.h2); ctx.stroke();
     const lbl = (d === 0) ? 'IPO' : (d >= 21) ? (Math.round(d / 21)) + 'M' : 'd' + d;
-    ctx.fillStyle = '#8b949e';
+    ctx.fillStyle = 'rgba(220,225,233,0.95)';
     ctx.fillText(lbl, x, box.y + box.h2 + 6);
   }
 
@@ -1232,7 +1265,7 @@ function draw() {
     document.getElementById('ref3m').style.display = 'none';
     document.getElementById('ref9m').style.display = 'none';
   }
-  renderStats(fullSeriesMap, selectedTickers, aggCohort);
+  renderStats(fullSeriesMap, selectedTickers, aggCohort, mainBase);
 }
 
 // ---- Stats ----
@@ -1309,7 +1342,7 @@ function statsFor(fullSeries, tname) {
   const size = (typeof IPO_META !== 'undefined' && IPO_META[tname]) ? IPO_META[tname].size : null;
   return { size, ipoToOpen, ret1d, ret1w, ret1m, ret3m, ret6m, ret1y, maxDD, vol };
 }
-function renderStats(fullSeriesMap, selectedTickers, aggCohort) {
+function renderStats(fullSeriesMap, selectedTickers, aggCohort, mainBase) {
   const fmt = v => v == null ? '<span class="muted">—</span>' :
     `<span class="${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
   const fmtPlain = v => v == null ? '<span class="muted">—</span>' :
@@ -1345,10 +1378,11 @@ function renderStats(fullSeriesMap, selectedTickers, aggCohort) {
     return sm;
   }
 
-  // Summary stats average per-column across whichever selected tickers have
-  // data at that milestone.  ret1y is overridden below to use the cohort
-  // truncation mean so it matches the AVG line's endpoint label.
-  const summary = buildSummary(selectedTickers);
+  // Summary stats average per-column across whichever main-set tickers have
+  // data at that milestone.  When "Exclude cohort from main averages" is on,
+  // mainBase is selectedTickers minus the active cohort.
+  const mainTickers = (mainBase && mainBase.length) ? mainBase : selectedTickers;
+  const summary = buildSummary(mainTickers);
   // Replace avg.ret1y with full-series truncation-point mean over the AGGREGATE
   // cohort (excludes short-history tickers) so it matches the AVG line endpoint.
   const aggCohortLocal = aggCohort || selectedTickers;
@@ -1420,10 +1454,12 @@ function renderStats(fullSeriesMap, selectedTickers, aggCohort) {
   // Min/Max/Median are gated on the "Show Min/Max/Median rows" toggle.
   if (selectedTickers.length > 1) {
     const ca = cohortSummary;
+    const excludedTag = (excludeCohortFromMain && cohortKey && COHORTS[cohortKey])
+      ? ' <span style="color:var(--muted);font-size:10px;font-weight:500">· excl. cohort</span>' : '';
     const cohortHeader = (ca && cohortTickers.length > 0)
       ? `<span class="cohort-badge">${COHORTS[cohortKey].label} (n=${cohortTickers.length})</span>`
       : '';
-    html += buildRow(`Avg (n=${selectedTickers.length})${cohortHeader}`, 'avg', summary.avg, ca ? ca.avg : null);
+    html += buildRow(`Avg (n=${mainTickers.length})${excludedTag}${cohortHeader}`, 'avg', summary.avg, ca ? ca.avg : null);
     if (showSummary) {
       html += buildRow('Min',    'minrow', summary.min, ca ? ca.min : null);
       html += buildRow('Max',    'maxrow', summary.max, ca ? ca.max : null);
