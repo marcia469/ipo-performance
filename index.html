@@ -385,6 +385,7 @@
         <button data-view="tape" class="active">Tape</button>
         <button data-view="overlay">Day Overlay</button>
         <button data-view="volprofile">Volume Profile</button>
+        <button data-view="compare">Compare</button>
       </div>
       <span class="lbl">Window</span>
       <div class="group" id="intradayWindowGroup">
@@ -408,6 +409,9 @@
       <label class="syncbox"><input type="checkbox" id="intradayShowDealLine" /> <span style="color:#fbbf24">▬</span> Deal price line</label>
       <label class="syncbox"><input type="checkbox" id="intradayShowOpenLine" /> <span style="color:#38bdf8">▬</span> D1 Open line</label>
       <label class="syncbox"><input type="checkbox" id="intradayShowDayBreaks" checked /> Day separators</label>
+      <label class="syncbox"><input type="checkbox" id="intradayShowCompareBand" checked /> Range band</label>
+      <label class="syncbox"><input type="checkbox" id="intradayShowCompareIndividual" checked /> Individual lines</label>
+      <label class="syncbox"><input type="checkbox" id="intradayShowCompareRangeBars" /> Range bars (session-end)</label>
     </div>
   </div>
 
@@ -1899,7 +1903,10 @@ window.IntradayApp = (function() {
     showOhlc: true,
     multiTicker: false,
     zoom: null,
-    _dragging: false
+    _dragging: false,
+    showCompareBand: true,
+    showCompareIndividual: true,
+    showCompareRangeBars: false
   };
 
   // ----- HELPERS -----
@@ -2559,6 +2566,213 @@ window.IntradayApp = (function() {
   }
 
   // ============================================================
+  //   RENDER: COMPARE (cross-ticker, indexed to D1 open=0%)
+  // ============================================================
+  function renderCompare(ctx, w, h) {
+    if (state.tickers.length === 0) { emptyMessage(ctx, w, h, 'Select at least one ticker'); return; }
+    const chartTop = PAD.t, chartBot = h - PAD.b;
+    const x0 = PAD.l, x1 = w - PAD.r;
+
+    // Per-ticker series of % return from D1 open (or deal price), aligned to elapsed bar index
+    const tickerSeries = state.tickers.map(t => {
+      const td = INTRADAY_DATA[t];
+      let bars = td.bars.filter(b => b[0] >= 1);
+      // Apply window filter so 'Open +30m' compares the first 30m across tickers etc.
+      if (state.window === '30m') bars = bars.filter((b, i) => i <= 30);
+      else if (state.window === '60m') bars = bars.filter((b, i) => i <= 60);
+      else if (state.window === 'd1') bars = bars.filter(b => b[0] === 1);
+      const baselinePrice = state.baseline === 'deal' ? td.offer : td.d1Open;
+      const startPerf = (td.d1Open - baselinePrice) / baselinePrice;
+      const perf = [startPerf].concat(bars.map(b => (b[5] - baselinePrice) / baselinePrice));
+      return { name: t, color: TICKER_COLORS[t] || '#fff', perf };
+    });
+
+    const cap = Math.min(...tickerSeries.map(s => s.perf.length));
+    if (cap < 2) { emptyMessage(ctx, w, h, 'Not enough data in window'); return; }
+
+    // Aggregate
+    const agg = [];
+    for (let i = 0; i < cap; i++) {
+      const vals = tickerSeries.map(s => s.perf[i]);
+      const mean = vals.reduce((a,b) => a+b, 0) / vals.length;
+      let mn = Infinity, mx = -Infinity;
+      vals.forEach(v => { if (v < mn) mn = v; if (v > mx) mx = v; });
+      agg.push({ mean, min: mn, max: mx });
+    }
+
+    // Y range
+    let yMin = Infinity, yMax = -Infinity;
+    agg.forEach(a => { if (a.min < yMin) yMin = a.min; if (a.max > yMax) yMax = a.max; });
+    const pad = (yMax - yMin) * 0.1 || 0.01;
+    yMin -= pad; yMax += pad;
+    if (yMin > 0) yMin = -0.005;
+    if (yMax < 0) yMax = 0.005;
+
+    const xScale = i => x0 + (i / (cap - 1)) * (x1 - x0);
+    const yScale = v => chartBot - ((v - yMin) / (yMax - yMin)) * (chartBot - chartTop);
+
+    // Background grid
+    drawGrid(ctx, x0, chartTop, x1, chartBot);
+    const yTicks = niceTicks(yMin, yMax, 6);
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.fillStyle = '#8b949e';
+    yTicks.forEach(yv => {
+      const yp = yScale(yv);
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath(); ctx.moveTo(x0, yp); ctx.lineTo(x1, yp); ctx.stroke();
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText((yv >= 0 ? '+' : '') + (yv * 100).toFixed(1) + '%', x1 + 6, yp);
+    });
+
+    // Zero baseline
+    if (yMin <= 0 && yMax >= 0) {
+      const y0 = yScale(0);
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+    }
+
+    // Session-end vertical separators (averaged across tickers)
+    const sessionEnds = [];
+    for (let d = 1; d <= 4; d++) {
+      let sum = 0;
+      state.tickers.forEach(t => {
+        const td = INTRADAY_DATA[t];
+        const dEnd = (390 - td.d1OpenMin) + (d - 1) * 391;
+        sum += dEnd;
+      });
+      sessionEnds.push(sum / state.tickers.length);
+    }
+    if (state.showDayBreaks) {
+      ctx.strokeStyle = 'rgba(139,148,158,0.3)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      sessionEnds.forEach((se, i) => {
+        if (se >= cap) return;
+        const xp = xScale(se);
+        ctx.beginPath(); ctx.moveTo(xp, chartTop); ctx.lineTo(xp, chartBot); ctx.stroke();
+        ctx.fillStyle = '#8b949e';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.font = '10px -apple-system, sans-serif';
+        ctx.fillText('End D' + (i + 1), xp, chartTop + 4);
+      });
+      ctx.setLineDash([]);
+    }
+
+    // Range band (min->max envelope)
+    if (state.showCompareBand) {
+      ctx.fillStyle = 'rgba(88, 166, 255, 0.13)';
+      ctx.beginPath();
+      for (let i = 0; i < cap; i++) {
+        const xp = xScale(i), yp = yScale(agg[i].max);
+        if (i === 0) ctx.moveTo(xp, yp); else ctx.lineTo(xp, yp);
+      }
+      for (let i = cap - 1; i >= 0; i--) {
+        const xp = xScale(i), yp = yScale(agg[i].min);
+        ctx.lineTo(xp, yp);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Individual ticker lines (thin)
+    if (state.showCompareIndividual) {
+      tickerSeries.forEach(s => {
+        ctx.strokeStyle = s.color;
+        ctx.globalAlpha = 0.65;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let i = 0; i < cap; i++) {
+          const xp = xScale(i), yp = yScale(s.perf[i]);
+          if (i === 0) ctx.moveTo(xp, yp); else ctx.lineTo(xp, yp);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      });
+    }
+
+    // Mean line (thick, bright)
+    ctx.strokeStyle = '#e6edf3';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i < cap; i++) {
+      const xp = xScale(i), yp = yScale(agg[i].mean);
+      if (i === 0) ctx.moveTo(xp, yp); else ctx.lineTo(xp, yp);
+    }
+    ctx.stroke();
+
+    // Discrete range bars at session-end
+    if (state.showCompareRangeBars) {
+      sessionEnds.forEach((se, i) => {
+        const idx = Math.floor(Math.min(se, cap - 1));
+        if (idx < 0) return;
+        const a = agg[idx];
+        const xp = xScale(idx);
+        const yMaxP = yScale(a.max);
+        const yMinP = yScale(a.min);
+        ctx.strokeStyle = '#fbbf24';
+        ctx.fillStyle = '#fbbf24';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(xp, yMinP); ctx.lineTo(xp, yMaxP); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(xp - 5, yMinP); ctx.lineTo(xp + 5, yMinP);
+        ctx.moveTo(xp - 5, yMaxP); ctx.lineTo(xp + 5, yMaxP);
+        ctx.stroke();
+        const rangePct = (a.max - a.min) * 100;
+        ctx.font = '10px -apple-system, sans-serif';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(rangePct.toFixed(1) + '% spread', xp + 8, (yMinP + yMaxP) / 2);
+      });
+    }
+
+    // End-of-line labels with each ticker's final %
+    if (state.showCompareIndividual || state.tickers.length === 1) {
+      tickerSeries.forEach(s => {
+        const lastPerf = s.perf[cap - 1];
+        const xp = xScale(cap - 1);
+        const yp = yScale(lastPerf);
+        ctx.fillStyle = s.color;
+        ctx.font = 'bold 11px -apple-system, sans-serif';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(s.name + ' ' + (lastPerf >= 0 ? '+' : '') + (lastPerf * 100).toFixed(1) + '%', xp + 4, yp);
+      });
+    }
+    // Mean end label
+    const meanLast = agg[cap - 1].mean;
+    const meanXp = xScale(cap - 1);
+    const meanYp = yScale(meanLast);
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = 'bold 11px -apple-system, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('Avg ' + (meanLast >= 0 ? '+' : '') + (meanLast * 100).toFixed(1) + '%',
+                 meanXp + 4, meanYp - 14);
+
+    // X-axis label
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '10px -apple-system, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Elapsed trading minutes since each ticker\'s D1 open (window: ' + state.window + ')', x0, chartBot + 6);
+
+    // Legend in upper-left: tickers + colors
+    const items = state.tickers.map(t => ({ label: t, color: TICKER_COLORS[t] || '#fff' }));
+    items.unshift({ label: 'Avg', color: '#e6edf3' });
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textBaseline = 'middle';
+    let ly = chartTop + 12;
+    items.forEach(it => {
+      ctx.fillStyle = it.color;
+      ctx.fillRect(x0 + 8, ly - 5, 10, 10);
+      ctx.fillStyle = '#c9d1d9';
+      ctx.textAlign = 'left';
+      ctx.fillText(it.label, x0 + 24, ly);
+      ly += 14;
+    });
+
+    state._lastCompare = { agg, tickerSeries, cap, x0, x1, chartTop, chartBot, yMin, yMax };
+  }
+
+  // ============================================================
   //   HELPERS
   // ============================================================
   function emptyMessage(ctx, w, h, msg) {
@@ -2844,6 +3058,43 @@ window.IntradayApp = (function() {
         if (cy + ch > L.chartBot) cy = y - ch - 14;
         card.style.left = cx + 'px';
         card.style.top = cy + 'px';
+      } else if (state.view === 'compare' && state._lastCompare) {
+        const L = state._lastCompare;
+        if (x < L.x0 || x > L.x1 || y < L.chartTop || y > L.chartBot) {
+          cross.style.display = 'none'; card.style.display = 'none'; return;
+        }
+        const idx = Math.max(0, Math.min(L.cap - 1,
+          Math.round(((x - L.x0) / (L.x1 - L.x0)) * (L.cap - 1))));
+        cross.style.display = 'block';
+        cross.style.left = x + 'px';
+        cross.style.top = L.chartTop + 'px';
+        cross.style.height = (L.chartBot - L.chartTop) + 'px';
+        cross.style.width = '1px';
+        cross.style.background = 'rgba(255,255,255,0.25)';
+        const a = L.agg[idx];
+        const fmtP = v => (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%';
+        let html = '<div class="hc-title">Elapsed: ' + idx + ' min</div>';
+        html += '<div class="hc-row" style="font-weight:600">'
+              + '<span class="hc-k" style="color:#c9d1d9">Avg</span>'
+              + '<span style="color:#e6edf3">' + fmtP(a.mean) + '</span></div>';
+        html += '<div style="height:4px"></div>';
+        L.tickerSeries.forEach(s2 => {
+          const v = s2.perf[idx];
+          html += '<div class="hc-row">'
+                + '<span class="hc-k" style="color:' + s2.color + '">' + s2.name + '</span>'
+                + '<span style="color:' + s2.color + '">' + fmtP(v) + '</span></div>';
+        });
+        html += '<div style="height:4px"></div>';
+        html += '<div class="hc-row"><span class="hc-k">Spread</span>'
+              + '<span>' + ((a.max - a.min) * 100).toFixed(2) + '%</span></div>';
+        card.innerHTML = html;
+        card.style.display = 'block';
+        const cw = card.offsetWidth, ch = card.offsetHeight;
+        let cx = x + 14, cy = y + 14;
+        if (cx + cw > L.x1) cx = x - cw - 14;
+        if (cy + ch > L.chartBot) cy = y - ch - 14;
+        card.style.left = cx + 'px';
+        card.style.top = cy + 'px';
       } else {
         cross.style.display = 'none';
         card.style.display = 'none';
@@ -2911,7 +3162,10 @@ window.IntradayApp = (function() {
       ['#intradayShowDealLine', 'showDealLine'],
       ['#intradayShowOpenLine', 'showOpenLine'],
       ['#intradayShowDayBreaks', 'showDayBreaks'],
-      ['#intradayShowOhlc', 'showOhlc']
+      ['#intradayShowOhlc', 'showOhlc'],
+      ['#intradayShowCompareBand', 'showCompareBand'],
+      ['#intradayShowCompareIndividual', 'showCompareIndividual'],
+      ['#intradayShowCompareRangeBars', 'showCompareRangeBars']
     ];
     wiringChk.forEach(([sel, key]) => {
       const el = $(sel);
@@ -2947,6 +3201,7 @@ window.IntradayApp = (function() {
     if (state.view === 'tape') renderTape(ctx, w, h);
     else if (state.view === 'overlay') renderOverlay(ctx, w, h);
     else if (state.view === 'volprofile') renderVolumeProfile(ctx, w, h);
+    else if (state.view === 'compare') renderCompare(ctx, w, h);
     updateStats();
   }
   function init() {
